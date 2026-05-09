@@ -1,0 +1,74 @@
+Text is converted to tokens and subtokens which is then converted to vector embeddings for the llm to understand. 
+In GPT like LLM's byte pair encoding is generally done. 
+
+Understanding word embeddings:
+
+Deep neural networks like LLM's cannot process text directly. Since texts are categorical, matematical operations 
+cannot be performed on them. Hence we need a way to represent texts in the form of vectors. 
+The process of converting text to a vector is called embeddings. 
+Using another layer or another pretrained neural network we can embed different data types like audio, video
+text, images etc. 
+We can embedd words, sentences, paragraphs entire doucments. Word embeddings are more common. 
+Sentence or paragraph embeddings are common for retrievel augumented generation. 
+Many frameworks and approaches have be proposed to convert words to embeddings. One popular approach is the
+word2vec approach. 
+In this approach a neural netowrk was trained to generate embeddings by predicting the context of a word given a 
+target word. The main idead behind this is that words that have similar contexts tend to be together. 
+Word embeddings can have dimensions varying from one to thousands. A high dimensional embedding can capture 
+more nuanced relationships at the cost of computational efficiency. 
+In LLM's we don't use word2vec or anyother network... the embedding layer is baked into the input layer.
+This has advantages that we will learn later. 
+Having high dimensional embeddings can be tradeoff between performance and efficiency. In GPT-2 and GPT-3 models,
+the embedding sizes are 768, 12,288 dimensions. 
+
+Steps used by an LLM for preparing tokens: splitting texts into words, converting words into tokens, and turning
+tokens into embedding vectors. 
+
+Removing whitespaces depends from application to application. Removing white spaces helps in reducing memory 
+and computing requirements. It's neccessary to keep qhite spaces to understand text strucure for example in the case 
+training the LLM in python code. 
+
+After creating tokens we need to assign these tokens a unique token ID. The embeddings are stored in a matrix
+called the embedding_matrix. So basically what's happening the text "There is a cat" gets broken down into
+["There","is","a","cat"]. What happens is a unique token id is generated and stored in a dictionary. 
+{"There":0,"is":1,"a":2,"cat":3}. The embedding matrix is obv. a matrix lol, and each row corresponds
+(the row represents the token id) the embedding. This is important because during the training stage of an llm,
+the embeddings are not constant and keep changing. 
+
+The vocabulary that's used needs to be vast and diverse enough otherwise we get key not found error. 
+
+The tokenizer cannot handle unkown words, so we need to modify it... We also need to add specialised tokens that
+enhance the models undertanding and context for the given text. These specialised tokens can include markers for 
+unkown words, and document bounderies. So in the next version of the tokenizer will give it support for two new 
+words those are  <|unk|> and <|endoftext|>. (Represent new words that were not part of training. Seperates two
+unrelated text document)
+In GPT like LLM's when training them on independent and unrelated documents, books it's common to include the 
+<|endoftext|> token to tell the llm that eventhough the texts have been concatenated to teach it, the documents
+are unrelated and needs to be treated independently. 
+
+Byte Pair Encoding:
+-A more sophisticated tokenization scheme. This scheme was used to train GPT's like GPT-2 GPT-3. Applying 
+the concept of byte pair encoding can be a relativley difficult we will use a python library that does this 
+very efficiently (built in rust)
+Using the tiktoken we can see that the <|endoftext|> is assigned a very large value. 
+One cool aspect of byte pair encdoing is that it never uses <|unk|> it always knows the word. How?
+The algorithm underlying BPE breaks down out of vocabulary words into subwords or into indivudal characters...
+These characters are in the vocabulary. 
+
+Data Sampling with a sliding window:
+
+The next step for creating an embedding is to create input-target pairs required for training an llm. 
+
+What happens during the training stage of an LLM. 
+Let's say during the training, We input "The cat sat on the mat."
+We run the following processes in parallel and compute the cost. 
+input: The ,target: cat
+input: The cat ,target : sat
+input: The cat sat, target: on 
+input : The cat sat on, target : the
+input : The cat sat on the target: mat 
+
+The errors are computed (cross entropy loss function.) 
+Hence we are ccreating input-target pairs.
+
+Small batch sizes require less memory during training but lead to more noisy model updates
