@@ -72,3 +72,15 @@ The errors are computed (cross entropy loss function.)
 Hence we are ccreating input-target pairs.
 
 Small batch sizes require less memory during training but lead to more noisy model updates
+
+Use the pytorch library for the embeddings. 
+A problem with this embedding layer is compare the following two sentences:
+1)The man bit the cat 
+2)The cat bit the man 
+
+These two senteneces are different but the embedding layer produces the same 
+embeddings for both cat and man irrespective of the poisition. Why is this an 
+issue? The position of the word plays a really important role. If the model 
+cannot pick up the position of the words then it's bad. So how do We fix this? 
+
+Two fix this we can use two ways that's making the embeddings position aware. The following are the ways to do it:1)Relativistic positional embeddings and the other is absolute positional embeddings. 
