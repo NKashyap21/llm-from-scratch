@@ -1,0 +1,56 @@
+Coding the Attention Mechanisms:
+--------------------------------
+
+There are three stages in building a Large Language Model:
+
+Stage1: Building An LLM
+    - Data Sampling 
+    - Coding the Attention Mechanism
+    - LLM Architecture
+
+Stage2: Foundation Model 
+    - Training Loop 
+    - Model Evaluation
+    - Load Pretrained Weights
+
+Stage3: Fine Tuning 
+    - Classifier
+    -Personal Assistant
+
+We will implement the attention mechanism is following ways:
+
+Simplified self attention -> Self Attention -> Casual Attention -> Multi Headed Attention
+
+The Problem with modeling Long Sequences:
+-------------------------------------------
+
+What was the problem with pre-llm Architectures that do not hav the attention mechanism? 
+Suppose you were given the task of building an application that translates text from one language to the other. A simple exact word to word translation doesn't work because of grammer constraints in the source and target languages. To address this problem it's common to use a deep neural netowrk that consits of an encoder and decoder. The encoder takes in the text process it and the decoder produces the translated text. 
+
+Before the advent of transformers, Recurrent Neural Netoworks (RNN) were the dominant encoder decoder architecture for translation tasks. An RNN is a neural netowrk that takes in the output from the preivous step and uses it as an input for the current step. This makes using RNN advantages is squence like data (text). 
+
+What's the problem with these RNN's then?
+Let's say you wanna translate this sentence "Kannst du mir helfen?" (German) → "Can you help me?" (English).
+The encoder in the RNN module, process one word at a time squentially and updates it's hidden states. This keeps happening... and at the end all of this information is stored into a single vector of fixed size. This is known as the context vector. This context vector carries information about the grammer, relatipnships of words etc (understnably this is the bottleneck). The decoder uses this context vector and starts translating the setntence while updtaing it's hidden states..
+
+The bottleneck is not that the there's a vector of fixed length. It's that this single vector must carry the enitre meaning of the text... and this is very difficult for large sentences (50 words). 
+The decoder only sees the final context vector and not the hidden states of encoder. 
+
+Capturing data dependencies with attention mechanisms:
+--------------------------------------------------------
+
+Following the shortcomings of RNN, researchers proposed the Badhanu Attention mechanism for RNN where the decoder can selectivley access the different parts in the input sequence at each decoding step. This means that some input tokens are more important than others (The importance is calculated by something known as attention weights.) 
+
+Researchers then realised that the RNN architecture is not required and proposed the first transformer (contains a self-attention mechanism) inspired from the Badhanu attention mechanism. 
+
+Self attention is a mechanism in which a every part of the input determines it's relevacny or "attends to" every other part of the same input sequence. Consider the sentence "The cat didn't cross street because it was tired." 
+
+Over here it refers to the cat and not the street. The self attention mechanism gives a way to tell that it refers to cat.
+
+Attending to different parts of the input with Self-Attention:
+---------------------------------------------------------------
+The self in self-attention refers to the mechanism's abibilty to compute attention weights by relating different parts of the input sentence itself. It assess and learns dependencies present in the input itself, such as words in a sentence, pixels in an image. 
+
+Consider an input x that consits of enteries x(1), x(2), x(3) ... x(T). The goal of self-attention is to create a context vecotr z(i) for each input x(i). We can think of the context vector x(i). 
+
+Let's consider the input x(2) present in x. The context vector z(2) is nothing but a linear combination of the input vecotrs... (the weights are called attention weights). z(2) = alpha_21*x(1) + alpha_22*x(2) + .... 
