@@ -1,0 +1,289 @@
+# Raschka "Build an LLM From Scratch" — Video Revision Notes
+
+Covers:
+1. **Video 1** — Working with Text Data (Ch. 2)
+2. **Video 2** — Coding Attention Mechanisms (Ch. 3)
+
+---
+
+# PART 1: WORKING WITH TEXT DATA
+
+## 1. The core problem
+
+An LLM's weights are just matrices of floats. It cannot consume raw strings. So before "The Verdict" (the sample text Raschka uses) can be trained on, it has to go through a pipeline:
+
+```
+raw text → tokens → token IDs → embeddings (token + positional) → fed into the model
+```
+
+Everything in this chapter builds that pipeline, piece by piece.
+
+## 2. Tokenization (simple version first)
+
+Before jumping to what real LLMs use, Raschka builds a toy tokenizer with regex to build intuition.
+
+- Split text on whitespace and punctuation using something like:
+  `re.split(r'([,.:;?_!"()\']|--|\s)', text)`
+- Strip out whitespace-only tokens.
+- Result: a list of words + punctuation marks, each treated as one token.
+
+This is purely educational — it shows *what* a tokenizer's job is (chop text into discrete units) before introducing the real subword tokenizer.
+
+## 3. Building a vocabulary
+
+- Take all unique tokens from the training text, **sort them**, and assign each an integer ID (`{token: id}`).
+- This gives you a fixed-size vocabulary — every token the model will ever see must map to an ID in this dict.
+
+### The `SimpleTokenizerV1` class
+- `encode(text)`: regex-split → look up each token in the vocab dict → return list of IDs.
+- `decode(ids)`: reverse lookup IDs → tokens → join with spaces → clean up spacing before punctuation.
+
+**Problem it exposes:** if a word appears in new text that wasn't in the training vocab, `encode()` crashes with a `KeyError`. Real-world text always has unseen words, so this is unusable as-is.
+
+## 4. Special context tokens
+
+To fix the above and handle document boundaries, two special tokens are added to the vocab:
+
+- `<|unk|>` — stand-in for any token not in the vocabulary.
+- `<|endoftext|>` — inserted between two unrelated documents when you concatenate multiple text sources, so the model learns "this is where one document ends and an unrelated one begins."
+
+`SimpleTokenizerV2` checks each word against the vocab; if it's missing, substitute `<|unk|>` instead of crashing.
+
+Other real tokenizers also reserve tokens like `<|BOS|>` (beginning of sequence), `<|EOS|>`, `<|PAD|>` — but GPT-2 style tokenizers (used later) actually only need `<|endoftext|>` and repurpose it for padding too.
+
+## 5. Byte Pair Encoding (BPE) — the real tokenizer
+
+Word-level tokenization has two big problems:
+1. Vocabulary would be huge (every word form is a separate entry).
+2. Any truly novel word still breaks it, `<|unk|>` throws away information.
+
+**BPE fixes both** by tokenizing at the *subword* level:
+- Start from individual characters/bytes.
+- Iteratively merge the most frequently co-occurring pairs into new tokens.
+- Common words end up as a single token; rare/novel words get split into smaller known chunks (sometimes down to individual characters), so **nothing is ever truly "unknown."**
+
+In practice, Raschka doesn't hand-implement BPE — he uses OpenAI's `tiktoken` library (the same tokenizer GPT-2/GPT-3 use):
+
+```python
+import tiktoken
+tokenizer = tiktoken.get_encoding("gpt2")
+ids = tokenizer.encode(text, allowed_special={"<|endoftext|>"})
+text = tokenizer.decode(ids)
+```
+
+Key demo: encoding a made-up word like `"Akwirw ier"` still works — BPE breaks it into sub-word pieces and `decode()` reconstructs it exactly. This proves BPE has no true out-of-vocabulary problem.
+
+GPT-2's BPE vocab size = 50,257 tokens.
+
+## 6. Data sampling with a sliding window
+
+The training objective for a GPT-style model is **next-token prediction**: given a chunk of tokens, predict the next one. To generate (input, target) training pairs from one long token stream, Raschka uses a sliding window.
+
+Given token IDs `[1,2,3,4,5,6,7,8,...]`, and a chosen `max_length` (context size, e.g. 4):
+
+- Input chunk: tokens `[i : i+max_length]`
+- Target chunk: tokens `[i+1 : i+max_length+1]` (i.e., **shifted right by one**)
+
+So if input = `[1,2,3,4]`, target = `[2,3,4,5]`. This means at each position the model is trained to predict the very next token given everything before it — this is what makes it autoregressive.
+
+**`stride`** controls how far the window moves forward each step:
+- `stride = max_length` → no overlap between consecutive training examples (most common default).
+- `stride < max_length` → overlapping windows → more training examples from the same text, but more redundancy/risk of overfitting.
+- `stride = 1` → maximum overlap, maximum number of examples.
+
+### `GPTDatasetV1` (PyTorch `Dataset` subclass)
+- `__init__`: tokenizes the *entire* text once, then slides the window across it, storing all `(input_chunk, target_chunk)` pairs as tensors in two lists.
+- `__len__`: number of chunks.
+- `__getitem__(idx)`: returns `(input_ids[idx], target_ids[idx])`.
+
+Note: this loads the whole tokenized text into memory — fine for a small book, not scalable to huge corpora (a limitation Raschka flags explicitly).
+
+### `create_dataloader_v1()`
+Wraps the dataset in a PyTorch `DataLoader` with params like `batch_size`, `shuffle`, `drop_last` (drop the last incomplete batch so all batches are uniform size — important for stable batch-norm/training behavior), and `num_workers`.
+
+Small aside worth remembering: **smaller batch size → less memory, noisier gradient updates**; **larger batch size → more memory, smoother/more stable updates** (but not strictly "better" — it's a tradeoff, not a free lunch).
+
+## 7. Token embeddings
+
+A token ID (e.g. `857`) is just an index — it carries no meaning by itself. An **embedding layer** (`nn.Embedding(vocab_size, embed_dim)`) is essentially a lookup table: a weight matrix of shape `(vocab_size, embed_dim)`, and each token ID selects one row (one vector) from it.
+
+- Initially these vectors are **random** — the model hasn't learned anything yet.
+- During training, backprop updates these embedding vectors so that semantically/functionally similar tokens end up with similar vectors.
+- Important equivalence Raschka points out: passing a **one-hot vector** through a single fully-connected `nn.Linear` layer is mathematically identical to an embedding lookup — the embedding layer is just a computationally efficient shortcut for that operation (avoids the vocab-sized one-hot matmul).
+
+## 8. Positional embeddings
+
+Self-attention (Part 2) has **no inherent sense of token order** — it treats input as an unordered set of vectors unless you tell it otherwise. But word order obviously matters ("dog bites man" ≠ "man bites dog").
+
+Fix: add a **second embedding layer** purely for position, `nn.Embedding(context_length, embed_dim)`, indexed not by token ID but by **position index** (0, 1, 2, ... up to context_length-1).
+
+- This is called an **absolute positional embedding** — each position gets its own learned vector regardless of what token sits there.
+- Final input to the model = `token_embedding + positional_embedding` (element-wise sum, both are `embed_dim`-sized, so they add directly).
+- GPT-2/3 use this learned-absolute-position approach; other architectures use different schemes (e.g. relative positional encodings, RoPE) — mentioned briefly as alternatives, not implemented here.
+
+## End-to-end pipeline recap (Chapter 2)
+
+```
+raw text
+  → BPE tokenizer (tiktoken) → token IDs
+  → sliding window → (input_chunk, target_chunk) pairs
+  → DataLoader → batches
+  → token embedding lookup  ─┐
+                              ├─ sum → input embeddings → fed into transformer blocks (Ch. 3+)
+  → positional embedding    ─┘
+```
+
+---
+
+# PART 2: CODING ATTENTION MECHANISMS
+
+## 1. Why attention at all?
+
+Older sequence models (RNNs) process tokens one at a time, compressing everything seen so far into a single fixed-size hidden state. For long sequences, early information gets diluted/forgotten by the time you reach the end — this is the "problem with modeling long sequences" Raschka opens with.
+
+**Self-attention** fixes this by letting every token look directly at every other token in the sequence (not just a compressed summary), and decide, dynamically, how much attention to pay to each. The output for a given token becomes a *weighted combination of all tokens' information*, where the weights are learned/computed based on relevance.
+
+Raschka builds this up in four stages of increasing sophistication:
+1. Simple self-attention (no trainable weights) — for intuition only.
+2. Self-attention with trainable weights (Q/K/V) — what's actually used.
+3. Causal self-attention — restricts attention to the past only.
+4. Multi-head attention — runs several attention "views" in parallel.
+
+## 2. Stage 1 — Simple self-attention (no weights)
+
+Goal: build intuition for what "attention weight" and "context vector" mean before adding any learnable parameters.
+
+Setup: you have a sequence of input embedding vectors `x_1, x_2, ..., x_T` (each of dimension `d`).
+
+**Step A — compute attention scores** for one query token `x_i` against every token `x_j` in the sequence: just the **dot product** `x_i · x_j`. High dot product = the two vectors point in a similar direction = "these tokens are relevant to each other."
+
+**Step B — normalize scores into weights**: apply **softmax** across all the scores for that query, so they're all positive and sum to 1. These are the *attention weights*.
+
+**Step C — compute the context vector**: the context vector for token `i` = weighted sum of **all** the input vectors, weighted by the attention weights from Step B:
+`context_i = Σ_j (attention_weight_ij * x_j)`
+
+Do this for every token `i` → you get a full matrix of context vectors, same shape as the input. Each context vector is now an order-aware, relevance-aware blend of the whole sequence, not just the original static embedding.
+
+This whole thing (for all tokens at once) is just:
+```
+scores = X @ X.T          # dot products, all pairs at once
+weights = softmax(scores, dim=-1)
+context = weights @ X
+```
+
+## 3. Stage 2 — Self-attention with trainable weights (the real thing)
+
+The problem with Stage 1: there are no learnable parameters, so the model can never adjust *how* it computes relevance. Fix: introduce **three trainable weight matrices**:
+
+- `W_query`
+- `W_key`
+- `W_value`
+
+Each input vector `x_i` gets projected through all three:
+```
+q_i = x_i @ W_query
+k_i = x_i @ W_key
+v_i = x_i @ W_value
+```
+
+Intuition for each (this is the part worth really internalizing):
+- **Query (q)**: "what am I looking for?" — represents the current token's search request.
+- **Key (k)**: "what do I contain / offer?" — represents each token's identity for matching against queries.
+- **Value (v)**: "what information do I actually pass along?" — the content that gets aggregated once relevance is decided. Note Q/K are used purely to *compute* the weighting; V is what actually gets summed.
+
+### Step-by-step computation
+1. Attention scores: `q_i · k_j` for every pair (i, j) → matrix `Q @ K.T`.
+2. **Scale** by `1/sqrt(d_k)` where `d_k` is the dimension of the key vectors. This is **scaled dot-product attention**. Why scale: as `d_k` grows, dot products grow large in magnitude, pushing softmax into regions with extremely small gradients (saturated softmax) — dividing by `sqrt(d_k)` keeps the variance of the scores roughly constant regardless of dimensionality, keeping training stable.
+3. Softmax over the scaled scores → attention weights.
+4. Context vector: `weights @ V` (weighted sum of value vectors, not raw inputs anymore).
+
+### `SelfAttention` class (compact PyTorch version)
+Implemented with `nn.Linear(d_in, d_out, bias=False)` for each of Q, K, V (Linear layers instead of raw `nn.Parameter` matrices — cleaner init, and this is exactly the pattern you already used in `attention.py`). Forward pass:
+```python
+Q = self.W_query(x)
+K = self.W_key(x)
+V = self.W_value(x)
+scores = Q @ K.transpose(-2, -1)
+weights = softmax(scores / K.shape[-1] ** 0.5, dim=-1)
+context = weights @ V
+```
+
+## 4. Stage 3 — Causal (masked) self-attention
+
+Problem: plain self-attention lets every token attend to **every other token, including future ones**. That's fine for encoder-style tasks, but for a GPT-style autoregressive model, letting token `i` see tokens `i+1, i+2, ...` during training would be cheating — at generation time those future tokens don't exist yet.
+
+**Fix — causal mask**: prevent each query position from attending to any key position *after* it.
+
+Two equivalent implementation styles Raschka shows:
+
+**Method A (naive/intuitive):** compute normal attention weights, then zero out the upper-triangular part of the weight matrix (future positions) and re-normalize rows so they sum back to 1.
+
+**Method B (efficient, actually used):** apply the mask *before* softmax instead of after:
+- Build an upper-triangular mask of `-inf` (or a very large negative number) above the diagonal, using `torch.triu(torch.ones(...), diagonal=1)`.
+- Add this mask to the raw attention scores before softmax: masked positions become `-inf`.
+- Softmax of `-inf` → `0`, automatically, with no separate re-normalization step needed — softmax handles it naturally since `e^(-inf) = 0`.
+
+This is why masking is done *before* softmax rather than after: it's mathematically cleaner (one softmax call handles normalization correctly) and numerically it's the standard implementation.
+
+### Dropout on attention weights
+After computing (masked) attention weights, apply `nn.Dropout` directly to the weight matrix (randomly zeroing some attention weights during training). This is a regularization technique — it prevents the model from over-relying on any single attention connection, similar in spirit to dropout elsewhere in deep nets. Applied *only during training*, not inference.
+
+### `CausalAttention` class
+Extends the `SelfAttention` class with:
+- A registered buffer holding the triangular mask (registered buffers move with `.to(device)` calls but aren't trained).
+- Batch dimension handling — real inputs are `(batch_size, num_tokens, d_in)`, so operations need to work across a batch, not just a single sequence (uses `torch.bmm`/broadcasting matmuls rather than the simpler unbatched 2D matmul used in Stage 2).
+- Dropout layer applied to attention weights after masking + softmax.
+
+## 5. Stage 4 — Multi-head attention
+
+Single-head attention only lets the model learn **one** notion of "relevance" per layer. Multi-head attention runs several attention computations **in parallel**, each with its own independent Q/K/V weight matrices, so different heads can specialize — one head might track syntactic relationships, another long-range topic relevance, etc. Outputs from all heads are concatenated and linearly projected back down.
+
+Two implementation approaches, both covered:
+
+### Approach A — naive stacking (`MultiHeadAttentionWrapper`)
+Literally instantiate `num_heads` separate `CausalAttention` modules, run the input through each independently, then concatenate their outputs along the feature dimension.
+- Easy to understand, but **inefficient** — each head does its own full computation with no shared work, and you end up managing a `ModuleList` of separate objects.
+
+### Approach B — weight-splitting (`MultiHeadAttention` — the one actually used)
+Instead of separate small Q/K/V matrices per head, use **one large** `W_query`, `W_key`, `W_value` (each producing the *full* `d_out` dimension), then **reshape** the result to split it across heads:
+
+1. Project: `Q = x @ W_query` → shape `(batch, num_tokens, d_out)`.
+2. Reshape/view: split `d_out` into `(num_heads, head_dim)` where `head_dim = d_out / num_heads`, giving shape `(batch, num_tokens, num_heads, head_dim)`.
+3. **Transpose** to `(batch, num_heads, num_tokens, head_dim)` so each head's computation is independent along the `num_tokens × head_dim` slice.
+4. Run scaled dot-product attention (with causal mask + dropout, exactly as in Stage 3) **per head simultaneously** via batched matmul — this is the key efficiency win: it's one big batched operation instead of a Python loop over heads.
+5. Transpose back and reshape/`.contiguous().view(...)` to merge heads back into a single `(batch, num_tokens, d_out)` tensor.
+6. Pass through a final linear **output projection** (`W_out`, an extra `nn.Linear(d_out, d_out)`) to mix information across heads before it leaves the block — without this, the heads' outputs are just concatenated side by side with no interaction.
+
+This weight-splitting approach is what's actually used in real GPT implementations — mathematically equivalent to running separate heads, but far more efficient on GPU because it's expressed as a handful of batched tensor ops instead of a loop.
+
+### Shapes to keep straight (this is where people usually get confused — worth drilling)
+```
+x:              (batch, num_tokens, d_in)
+Q, K, V (proj): (batch, num_tokens, d_out)
+after split:    (batch, num_tokens, num_heads, head_dim)
+after transpose:(batch, num_heads, num_tokens, head_dim)
+attn scores:    (batch, num_heads, num_tokens, num_tokens)
+context (per head): (batch, num_heads, num_tokens, head_dim)
+after transpose+merge: (batch, num_tokens, d_out)
+after W_out:    (batch, num_tokens, d_out)   ← final output, same shape as input
+```
+
+## 6. Chapter summary / what this feeds into
+
+By the end of Chapter 3 you have a complete, causal, multi-head, dropout-regularized `MultiHeadAttention` module that:
+- Takes token+positional embeddings from Chapter 2 as input,
+- Returns context vectors of the same shape,
+- Is the "engine" that gets dropped into a full transformer block in Chapter 4, alongside layer norm, a feed-forward network, and residual/shortcut connections (that's the next video/chapter).
+
+---
+
+## Quick self-check questions (for revision)
+
+1. Why does BPE never produce an `<|unk|>` token, unlike word-level tokenization?
+2. If `max_length=4` and `stride=4`, do consecutive training examples overlap? What about `stride=2`?
+3. Why is the target sequence just the input sequence shifted by one position?
+4. What breaks if you don't add positional embeddings to token embeddings?
+5. Why divide attention scores by `sqrt(d_k)` specifically, rather than some other constant?
+6. Why is the causal mask applied *before* softmax rather than zeroing weights *after* softmax?
+7. In multi-head attention (weight-splitting version), what would go wrong if you skipped the final `W_out` projection after merging heads back together?
+8. What's the actual difference in compute cost between `MultiHeadAttentionWrapper` (Approach A) and `MultiHeadAttention` (Approach B), given they're mathematically equivalent?

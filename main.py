@@ -1,45 +1,43 @@
-from src.data.dataloader import create_dataloader_v1
-import torch 
+from src.model.gpt import GPT2Model
+import tiktoken
+import torch
 
-with open("./data/the-verdict.txt","r",encoding="utf-8") as f:
-    raw_text = f.read()
+cfg = {
+        "vocab_size":50257,
+        "context_length":1024,
+        "emb_dim":768,
+        "n_heads":12,
+        "n_layers":12,
+        "drop_rate":0.1,
+        "qkv_bias":False
+}
 
-dataloader = create_dataloader_v1(
-    txt=raw_text,
-    batch_size=1,
-    max_length=4,
-    stride=1,
-    shuffle=False
+def generate_text(model,idx,max_new_tokens,context_size):
+    for _ in range(max_new_tokens):
+        idx_cond = idx[:,-context_size:]
+
+        with torch.no_grad():
+            logits = model(idx_cond)
+        logits = logits[:,-1,:]
+        probas = torch.softmax(logits,dim=-1)
+        id_next = torch.argmax(probas,dim=-1,keepdim=True)
+        idx = torch.cat((idx,id_next),dim=1)
+
+    return idx
+
+tokenizer = tiktoken.get_encoding("gpt2")
+model = GPT2Model(cfg)
+
+start_context = "Hello, I am"
+encoded = tokenizer.encode(start_context)
+encoded_tensor = torch.tensor(encoded).unsqueeze(0)
+print("encoded tensor shape: ",encoded_tensor.shape)
+
+out = generate_text(
+    model=model,
+    idx = encoded_tensor,
+    max_new_tokens=10,
+    context_size=cfg["context_length"],
 )
 
-data_iter = iter(dataloader)
-inputs,targets = next(data_iter)
-
-vocab_size = 50257 #This is from the BPE
-output_dim = 256 
-
-token_embedding_layer = torch.nn.Embedding(vocab_size,output_dim)
-max_length = 4
-dataloader = create_dataloader_v1(
-    txt=raw_text,
-    batch_size=8,
-    max_length=max_length,
-    stride=max_length,
-    shuffle=False
-)
-data_iter = iter(dataloader)
-inputs,targets = next(data_iter)
-
-print("Token IDs:\n", inputs)
-print("\nInputs shape:\n", inputs.shape)
-
-token_embeddings = token_embedding_layer(inputs)
-print(f"Token Embeddings Shape: {token_embeddings.shape}")
-
-context_length = max_length
-pos_embedding_layer = torch.nn.Embedding(context_length,output_dim)
-pos_embeddings = pos_embedding_layer(torch.arange(context_length))
-print(pos_embeddings.shape)
-
-input_embeddings = token_embeddings + pos_embeddings
-print(f"Input Embeddings: {input_embeddings.shape}")
+print(tokenizer.decode(out.squeeze(0).tolist()))
